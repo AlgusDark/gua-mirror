@@ -52,8 +52,15 @@ services:
     container_name: gua-mirror
     # Share gluetun's netns so we operate on the same tun0 and same egress.
     network_mode: "service:gluetun"
+    # Drop every capability and add only the one we need. Combined with
+    # no-new-privileges, this leaves the container with NET_ADMIN and nothing
+    # else, even if the binary or one of its execed children is exploited.
+    cap_drop:
+      - ALL
     cap_add:
       - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       gluetun:
         condition: service_healthy
