@@ -1,0 +1,75 @@
+# Example docker-compose stack: gluetun (AirVPN) + qBittorrent + gua-mirror.
+# Replace the AirVPN credentials and the qBittorrent password before using.
+
+services:
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      # qBittorrent WebUI, exposed via gluetun's netns.
+      - "10095:10095"
+    volumes:
+      - gluetun-data:/gluetun
+    environment:
+      VPN_SERVICE_PROVIDER: airvpn
+      VPN_TYPE: wireguard
+      # Fill in from your AirVPN client area:
+      WIREGUARD_PRIVATE_KEY: "REPLACE_ME"
+      WIREGUARD_PRESHARED_KEY: "REPLACE_ME"
+      WIREGUARD_ADDRESSES: "10.x.x.x/32,fd7d:xxxx:xxxx:xxxx::xxxx/64"
+      SERVER_COUNTRIES: "Japan"
+      # Tell gluetun to write its public-IP file to the shared volume so
+      # gua-mirror can watch it.
+      PUBLICIP_FILE: /gluetun/ip
+      TZ: Etc/UTC
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: "0"
+      net.ipv6.conf.all.forwarding: "1"
+    restart: unless-stopped
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    volumes:
+      - qbittorrent-config:/config
+      - ./downloads:/downloads
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      WEBUI_PORT: "10095"
+    restart: unless-stopped
+
+  gua-mirror:
+    image: ghcr.io/algus/gua-mirror:latest
+    container_name: gua-mirror
+    # Share gluetun's netns so we operate on the same tun0 and same egress.
+    network_mode: "service:gluetun"
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    volumes:
+      - gluetun-data:/gluetun:ro
+    environment:
+      TUN_INTERFACE: tun0
+      PUBLICIP_FILE: /gluetun/ip
+      SAFETY_POLL_INTERVAL: 15m
+      LOG_LEVEL: info
+      # Optional: drop these to disable qBittorrent integration entirely.
+      QBITTORRENT_URL: http://localhost:10095
+      QBITTORRENT_USERNAME: admin
+      QBITTORRENT_PASSWORD: REPLACE_ME
+    restart: unless-stopped
+
+volumes:
+  gluetun-data:
+  qbittorrent-config:

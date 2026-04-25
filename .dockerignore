@@ -1,0 +1,10 @@
+.git
+.github
+.gitignore
+.dockerignore
+README.md
+LICENSE
+docker-compose.example.yaml
+*.test
+*.out
+dist/
