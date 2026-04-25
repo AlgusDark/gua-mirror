@@ -88,7 +88,13 @@ func (d *Detector) query(ctx context.Context, endpoint string) (net.IP, error) {
 	return ParseEchoResponse(string(body))
 }
 
-// ParseEchoResponse extracts an IPv6 address from a plain-text echo response.
+// ParseEchoResponse extracts an IPv6 address from a plain-text echo response,
+// rejecting anything that isn't a routable public GUA. This is defense in
+// depth against a compromised or hostile echo endpoint: even if an attacker
+// controls the response, the worst they can do is fail validation. Adding a
+// loopback/ULA/link-local/multicast address as an interface alias would be
+// either useless or actively misleading.
+//
 // Exposed for testing.
 func ParseEchoResponse(s string) (net.IP, error) {
 	ipStr := strings.TrimSpace(s)
@@ -98,6 +104,12 @@ func ParseEchoResponse(s string) (net.IP, error) {
 	}
 	if ip.To4() != nil {
 		return nil, fmt.Errorf("got IPv4 from IPv6-only echo: %s", ipStr)
+	}
+	// IsGlobalUnicast() returns false for loopback, multicast, unspecified,
+	// and link-local. IsPrivate() additionally returns true for ULA (fc00::/7).
+	// We want a publicly routable address, so reject both categories.
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return nil, fmt.Errorf("not a public IPv6 address: %s", ipStr)
 	}
 	return ip, nil
 }
