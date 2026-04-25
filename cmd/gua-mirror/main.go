@@ -11,11 +11,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/algus/gua-mirror/internal/alias"
-	"github.com/algus/gua-mirror/internal/config"
-	"github.com/algus/gua-mirror/internal/detect"
-	"github.com/algus/gua-mirror/internal/qbt"
-	"github.com/algus/gua-mirror/internal/trigger"
+	"github.com/AlgusDark/gua-mirror/internal/alias"
+	"github.com/AlgusDark/gua-mirror/internal/config"
+	"github.com/AlgusDark/gua-mirror/internal/detect"
+	"github.com/AlgusDark/gua-mirror/internal/qbt"
+	"github.com/AlgusDark/gua-mirror/internal/trigger"
 )
 
 // version is overridden at build time via -ldflags "-X main.version=...".

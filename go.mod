@@ -1,4 +1,4 @@
-module github.com/algus/gua-mirror
+module github.com/AlgusDark/gua-mirror
 
 go 1.23
 

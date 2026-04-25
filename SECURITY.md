@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please report security issues privately by opening a draft security advisory
-on GitHub: <https://github.com/algus/gua-mirror/security/advisories/new>.
+on GitHub: <https://github.com/AlgusDark/gua-mirror/security/advisories/new>.
 
 Do **not** open a public issue for vulnerabilities. We aim to respond within
 a few days.

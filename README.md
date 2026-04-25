@@ -84,7 +84,7 @@ services:
     # ...your VPN config...
 
   gua-mirror:
-    image: ghcr.io/algus/gua-mirror:latest
+    image: ghcr.io/algusdark/gua-mirror:latest
     network_mode: "service:gluetun"       # share gluetun's netns
     cap_add: [NET_ADMIN]
     depends_on:
