@@ -24,6 +24,11 @@ import (
 // version is overridden at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
+// healthSentinelPath is touched on every successful reconcile. The container
+// HEALTHCHECK reads its mtime to decide if the daemon is alive. /run is a
+// tmpfs in standard Linux containers so this never touches disk.
+const healthSentinelPath = "/run/gua-mirror/healthy"
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("fatal", "err", err)
@@ -52,6 +57,12 @@ func run() error {
 	)
 
 	warnIfPublicIPPathMissing(cfg.PublicIPFile, log)
+
+	if err := os.MkdirAll(filepath.Dir(healthSentinelPath), 0o755); err != nil {
+		log.Warn("could not create health sentinel directory; "+
+			"HEALTHCHECK will report unhealthy",
+			"path", healthSentinelPath, "err", err)
+	}
 
 	detector := detect.New(cfg.IPv6EchoEndpoints, log)
 	aliasMgr := alias.NewManager(cfg.TunInterface, log)
@@ -95,6 +106,11 @@ func run() error {
 // reconcile detects the current public v6 and updates the alias and (if
 // configured) qBittorrent. Errors are logged and swallowed; the next tick
 // will retry. We never want to crash the daemon over a transient HTTP blip.
+//
+// Any path through this function that successfully fetches a public v6
+// touches the health sentinel, including the "v6 unchanged" no-op: that is
+// the dominant case in a healthy stack and is the right signal that the
+// daemon's main loop is alive and the detect path works end to end.
 func reconcile(ctx context.Context, det *detect.Detector, mgr *alias.Manager, q *qbt.Client, log *slog.Logger) {
 	detectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -105,6 +121,8 @@ func reconcile(ctx context.Context, det *detect.Detector, mgr *alias.Manager, q 
 			"current", ipString(mgr.Current()), "err", err)
 		return
 	}
+	touchHealthSentinel(log)
+
 	if cur := mgr.Current(); cur != nil && cur.Equal(ip) {
 		log.Debug("v6 unchanged", "address", ip.String())
 		return
@@ -122,6 +140,25 @@ func reconcile(ctx context.Context, det *detect.Detector, mgr *alias.Manager, q 
 	defer qcancel()
 	if err := q.ReannounceAll(qctx); err != nil {
 		log.Warn("qbittorrent reannounce failed", "err", err)
+	}
+}
+
+// touchHealthSentinel updates the mtime of the sentinel file the container
+// HEALTHCHECK reads. Failures are logged at debug and swallowed: a missing
+// sentinel will fail the healthcheck, which is the loudest possible signal,
+// so we don't need to also fail reconcile over it.
+func touchHealthSentinel(log *slog.Logger) {
+	now := time.Now()
+	if err := os.Chtimes(healthSentinelPath, now, now); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			log.Debug("touch health sentinel failed", "err", err)
+		}
+		f, err := os.Create(healthSentinelPath)
+		if err != nil {
+			log.Debug("create health sentinel failed", "err", err)
+			return
+		}
+		_ = f.Close()
 	}
 }
 
