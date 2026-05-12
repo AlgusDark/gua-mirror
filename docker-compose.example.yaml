@@ -69,7 +69,7 @@ services:
     environment:
       TUN_INTERFACE: tun0
       PUBLICIP_FILE: /gluetun/ip
-      SAFETY_POLL_INTERVAL: 15m
+      SAFETY_POLL_INTERVAL: 1h
       LOG_LEVEL: info
       # Optional: drop these to disable qBittorrent integration entirely.
       QBITTORRENT_URL: http://localhost:10095

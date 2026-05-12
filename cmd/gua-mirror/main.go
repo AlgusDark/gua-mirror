@@ -4,10 +4,13 @@ package main
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"log/slog"
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -20,6 +23,11 @@ import (
 
 // version is overridden at build time via -ldflags "-X main.version=...".
 var version = "dev"
+
+// healthSentinelPath is touched on every successful reconcile. The container
+// HEALTHCHECK reads its mtime to decide if the daemon is alive. /run is a
+// tmpfs in standard Linux containers so this never touches disk.
+const healthSentinelPath = "/run/gua-mirror/healthy"
 
 func main() {
 	if err := run(); err != nil {
@@ -47,6 +55,14 @@ func run() error {
 		"safety_poll", cfg.SafetyPollInterval,
 		"qbittorrent_enabled", cfg.QBittorrent != nil,
 	)
+
+	warnIfPublicIPPathMissing(cfg.PublicIPFile, log)
+
+	if err := os.MkdirAll(filepath.Dir(healthSentinelPath), 0o755); err != nil {
+		log.Warn("could not create health sentinel directory; "+
+			"HEALTHCHECK will report unhealthy",
+			"path", healthSentinelPath, "err", err)
+	}
 
 	detector := detect.New(cfg.IPv6EchoEndpoints, log)
 	aliasMgr := alias.NewManager(cfg.TunInterface, log)
@@ -90,6 +106,11 @@ func run() error {
 // reconcile detects the current public v6 and updates the alias and (if
 // configured) qBittorrent. Errors are logged and swallowed; the next tick
 // will retry. We never want to crash the daemon over a transient HTTP blip.
+//
+// Any path through this function that successfully fetches a public v6
+// touches the health sentinel, including the "v6 unchanged" no-op: that is
+// the dominant case in a healthy stack and is the right signal that the
+// daemon's main loop is alive and the detect path works end to end.
 func reconcile(ctx context.Context, det *detect.Detector, mgr *alias.Manager, q *qbt.Client, log *slog.Logger) {
 	detectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -100,6 +121,8 @@ func reconcile(ctx context.Context, det *detect.Detector, mgr *alias.Manager, q 
 			"current", ipString(mgr.Current()), "err", err)
 		return
 	}
+	touchHealthSentinel(log)
+
 	if cur := mgr.Current(); cur != nil && cur.Equal(ip) {
 		log.Debug("v6 unchanged", "address", ip.String())
 		return
@@ -120,11 +143,69 @@ func reconcile(ctx context.Context, det *detect.Detector, mgr *alias.Manager, q 
 	}
 }
 
+// touchHealthSentinel updates the mtime of the sentinel file the container
+// HEALTHCHECK reads. Failures are logged at debug and swallowed: a missing
+// sentinel will fail the healthcheck, which is the loudest possible signal,
+// so we don't need to also fail reconcile over it.
+func touchHealthSentinel(log *slog.Logger) {
+	now := time.Now()
+	if err := os.Chtimes(healthSentinelPath, now, now); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			log.Debug("touch health sentinel failed", "err", err)
+		}
+		f, err := os.Create(healthSentinelPath)
+		if err != nil {
+			log.Debug("create health sentinel failed", "err", err)
+			return
+		}
+		_ = f.Close()
+	}
+}
+
 func ipString(ip net.IP) string {
 	if ip == nil {
 		return ""
 	}
 	return ip.String()
+}
+
+// warnIfPublicIPPathMissing reports the common misconfiguration where
+// PUBLICIP_FILE points at a path no writer ever produces.
+//
+// Two distinct states are checked:
+//
+//   - Parent directory missing. The filesystem watcher will fail to attach
+//     and the daemon will exit shortly after this warning -- but the
+//     warning makes it obvious *why*. The fix is to mount the VPN
+//     container's shared volume into this container at the right path.
+//
+//   - Parent present but the file itself not yet written. This is the
+//     legitimate first-boot state; the watcher attaches to the directory
+//     and waits for the first write. Logged at info as reassurance, not a
+//     problem.
+//
+// We don't try to recover from the first case (poll-only mode is a strictly
+// worse degraded state that no one asked for); we just make the failure
+// mode loud enough that an operator finds the misconfig within seconds.
+func warnIfPublicIPPathMissing(path string, log *slog.Logger) {
+	dir := filepath.Dir(path)
+	if _, err := os.Stat(dir); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			log.Warn("PUBLICIP_FILE parent directory does not exist; "+
+				"mount the VPN container's shared volume here or fix PUBLICIP_FILE. "+
+				"The filesystem watcher will fail to attach and the daemon will exit.",
+				"path", path, "dir", dir)
+		} else {
+			log.Warn("PUBLICIP_FILE parent directory stat failed",
+				"path", path, "dir", dir, "err", err)
+		}
+		return
+	}
+	if _, err := os.Stat(path); err != nil && errors.Is(err, fs.ErrNotExist) {
+		log.Info("PUBLICIP_FILE not present yet; "+
+			"waiting for first write from the VPN container",
+			"path", path)
+	}
 }
 
 func parseLogLevel(s string) slog.Level {
