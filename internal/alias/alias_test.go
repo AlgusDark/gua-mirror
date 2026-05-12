@@ -20,8 +20,12 @@ func TestReconcileAddsWhenNoDeprecatedAliasPresent(t *testing.T) {
 	ops := &fakeOps{}
 	m := newManagerWithOps("tun0", ops)
 
-	if err := m.Reconcile(context.Background(), desired); err != nil {
+	changed, err := m.Reconcile(context.Background(), desired)
+	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
+	}
+	if !changed {
+		t.Errorf("expected changed=true after an add, got false")
 	}
 
 	if ops.adds != 1 || ops.dels != 0 {
@@ -42,8 +46,15 @@ func TestReconcileAdoptsExistingMatchingAlias(t *testing.T) {
 	ops := &fakeOps{addrs: map[string][]net.IP{"tun0": {desired}}}
 	m := newManagerWithOps("tun0", ops)
 
-	if err := m.Reconcile(context.Background(), desired); err != nil {
+	changed, err := m.Reconcile(context.Background(), desired)
+	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
+	}
+	// Adopt-on-restart: kernel state did not move. This is the property
+	// the reannounce gate depends on -- if changed were true here the
+	// daemon would hammer trackers on every restart.
+	if changed {
+		t.Errorf("expected changed=false on adopt-on-restart, got true")
 	}
 
 	if ops.adds != 0 || ops.dels != 0 {
@@ -62,8 +73,12 @@ func TestReconcileReplacesStaleAlias(t *testing.T) {
 	ops := &fakeOps{addrs: map[string][]net.IP{"tun0": {stale}}}
 	m := newManagerWithOps("tun0", ops)
 
-	if err := m.Reconcile(context.Background(), desired); err != nil {
+	changed, err := m.Reconcile(context.Background(), desired)
+	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
+	}
+	if !changed {
+		t.Errorf("expected changed=true after replace, got false")
 	}
 
 	if ops.adds != 1 || ops.dels != 1 {
@@ -94,8 +109,12 @@ func TestReconcileRemovesAllStaleAliases(t *testing.T) {
 	ops := &fakeOps{addrs: map[string][]net.IP{"tun0": {stale1, stale2, stale3}}}
 	m := newManagerWithOps("tun0", ops)
 
-	if err := m.Reconcile(context.Background(), desired); err != nil {
+	changed, err := m.Reconcile(context.Background(), desired)
+	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
+	}
+	if !changed {
+		t.Errorf("expected changed=true after multi-stale prune, got false")
 	}
 
 	if ops.adds != 1 || ops.dels != 3 {
@@ -116,8 +135,16 @@ func TestReconcilePrunesExtraStaleWhenDesiredAlreadyPresent(t *testing.T) {
 	ops := &fakeOps{addrs: map[string][]net.IP{"tun0": {desired, stale}}}
 	m := newManagerWithOps("tun0", ops)
 
-	if err := m.Reconcile(context.Background(), desired); err != nil {
+	changed, err := m.Reconcile(context.Background(), desired)
+	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
+	}
+	// Stale was pruned -- kernel state moved, even though "desired" was
+	// already present. Callers should still see changed=true here so
+	// they can reannounce (the cleanup itself shouldn't normally happen,
+	// but if it did, qBT was likely also out of sync).
+	if !changed {
+		t.Errorf("expected changed=true after pruning extras, got false")
 	}
 
 	if ops.adds != 0 || ops.dels != 1 {
@@ -144,8 +171,15 @@ func TestReconcileToleratesBestEffortDeleteFailure(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(&buf, nil))
 	m := &Manager{Interface: "tun0", Log: log, ops: ops}
 
-	if err := m.Reconcile(context.Background(), desired); err != nil {
+	changed, err := m.Reconcile(context.Background(), desired)
+	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
+	}
+	// The add succeeded even though the best-effort delete failed --
+	// kernel state still moved (new alias is present), so changed must
+	// be true.
+	if !changed {
+		t.Errorf("expected changed=true despite best-effort delete failure, got false")
 	}
 	if !strings.Contains(buf.String(), "remove stale alias failed") {
 		t.Errorf("expected warning in log, got: %s", buf.String())
@@ -166,8 +200,12 @@ func TestReconcileRejectsNonIPv6(t *testing.T) {
 		net.ParseIP("::ffff:1.2.3.4"), // v4-mapped v6
 	}
 	for _, ip := range cases {
-		if err := m.Reconcile(context.Background(), ip); err == nil {
+		changed, err := m.Reconcile(context.Background(), ip)
+		if err == nil {
 			t.Errorf("expected error for %v, got nil", ip)
+		}
+		if changed {
+			t.Errorf("rejected input must not report changed=true, ip=%v", ip)
 		}
 	}
 	if ops.adds != 0 || ops.dels != 0 {

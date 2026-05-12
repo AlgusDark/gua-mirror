@@ -91,22 +91,33 @@ func run() error {
 		}
 	}()
 
+	// firstReconcile flips to false after the first successful reconcile
+	// completes. It exists so the daemon issues exactly one reannounce
+	// on startup regardless of whether the alias was adopted as-is
+	// (changed=false) -- this hedges against the previous gua-mirror
+	// having died after setting the alias but before reannouncing, or
+	// trackers having been told a stale GUA the last time qBT ran.
+	// After the first tick, reannounce is gated strictly on actual
+	// alias changes; in steady state on a stable VPN session this means
+	// zero reannounce traffic.
+	firstReconcile := true
 	for {
 		select {
 		case <-ctx.Done():
 			log.Info("shutting down")
 			return nil
 		case <-triggers:
-			reconcile(ctx, detector, aliasMgr, qbtClient, log)
+			reconcile(ctx, detector, aliasMgr, qbtClient, log, &firstReconcile)
 		}
 	}
 }
 
 // reconcile runs the pipeline once per trigger: detect the current GUA,
 // reconcile the deprecated alias on the tunnel interface, and (if
-// configured) tell qBittorrent to reannounce so trackers see the new
-// address. Errors are logged and swallowed; the next trigger will retry.
-// We never want to crash the daemon over a transient HTTP blip.
+// configured and the alias actually moved -- or this is the first tick)
+// tell qBittorrent to reannounce so trackers see the new address.
+// Errors are logged and swallowed; the next trigger will retry. We
+// never want to crash the daemon over a transient HTTP blip.
 //
 // The alias manager is the source of truth for the observed alias on
 // the interface, so this function does not carry any in-memory cache:
@@ -117,7 +128,12 @@ func run() error {
 // the alias mutation. That is the right signal for the HEALTHCHECK:
 // the main loop is alive and end-to-end detection works, regardless of
 // whether the alias actually needed to change on this tick.
-func reconcile(ctx context.Context, det *detect.Detector, mgr *alias.Manager, q *qbt.Client, log *slog.Logger) {
+//
+// firstReconcile is a pointer so this function can flip it to false
+// after a successful reconcile -- "first" here means "first successful
+// pass," not "first invocation," because a detection failure on the
+// first tick should not consume the startup reannounce.
+func reconcile(ctx context.Context, det *detect.Detector, mgr *alias.Manager, q *qbt.Client, log *slog.Logger, firstReconcile *bool) {
 	detectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -128,11 +144,20 @@ func reconcile(ctx context.Context, det *detect.Detector, mgr *alias.Manager, q 
 	}
 	touchHealthSentinel(log)
 
-	if err := mgr.Reconcile(ctx, desired); err != nil {
+	changed, err := mgr.Reconcile(ctx, desired)
+	if err != nil {
 		log.Error("alias reconcile failed", "err", err)
 		return
 	}
+
+	startup := *firstReconcile
+	*firstReconcile = false
+
 	if q == nil {
+		return
+	}
+	if !changed && !startup {
+		log.Debug("alias unchanged; skipping reannounce")
 		return
 	}
 	qctx, qcancel := context.WithTimeout(ctx, 15*time.Second)
