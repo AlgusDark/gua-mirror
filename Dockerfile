@@ -18,7 +18,11 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     ./cmd/gua-mirror
 
 FROM alpine:3.20
-RUN apk add --no-cache iproute2 ca-certificates tzdata \
+# The daemon talks to the kernel over netlink directly; no iproute2
+# userland is needed at runtime. ca-certificates is required for the
+# v6 echo HTTPS calls; tzdata gives us correct log timestamps in the
+# operator's local zone.
+RUN apk add --no-cache ca-certificates tzdata \
     && addgroup -S app && adduser -S -G app app
 
 COPY --from=build /out/gua-mirror /usr/local/bin/gua-mirror
@@ -33,8 +37,8 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD [ -n "$(find /run/gua-mirror/healthy -mmin -120 2>/dev/null)" ] \
         || exit 1
 
-# Runs as root because `ip addr replace` requires CAP_NET_ADMIN. The
-# capability is granted via docker-compose `cap_add: [NET_ADMIN]`; we
-# inherit no other privileges.
+# Runs as root because rtnetlink address mutations require CAP_NET_ADMIN.
+# The capability is granted via docker-compose `cap_add: [NET_ADMIN]`;
+# we inherit no other privileges.
 USER 0
 ENTRYPOINT ["/usr/local/bin/gua-mirror"]

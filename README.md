@@ -45,6 +45,8 @@ reannounce so trackers learn the new IP.
 gluetun writes its public  ──►  inotify(/gluetun/ip)
 IPv4 to PUBLICIP_FILE                  │
                                        ▼
+                            content changed since last seen?
+                                       │ yes
 every SAFETY_POLL_INTERVAL ──►  safety poll tick
                                        │
                                        ▼
@@ -52,9 +54,13 @@ every SAFETY_POLL_INTERVAL ──►  safety poll tick
                             (with fallbacks, IPv6-only)
                                        │
                                        ▼
-                            ip -6 addr replace <gua>/128 \
-                                dev tun0                 \
-                                preferred_lft 0
+                            rtnetlink RTM_GETADDR (read tun0)
+                                       │
+                                       ▼
+                            if observed != desired:
+                                rtnetlink RTM_NEWADDR
+                                  (replace, preferred_lft 0)
+                                rtnetlink RTM_DELADDR (stale)
                                        │
                                        ▼
                             POST qbt /torrents/reannounce
@@ -63,6 +69,13 @@ every SAFETY_POLL_INTERVAL ──►  safety poll tick
 
 The container shares gluetun's network namespace, so it sees the same `tun0`
 and uses the same egress as everything else behind the VPN.
+
+Inotify events are deduplicated by file content: gluetun rewrites
+`PUBLICIP_FILE` on every publicip refresh, but most refreshes don't move
+the v4 address (and therefore can't have moved the v6 GUA either). The
+safety poll is the fallback for the cases where the GUA changes without
+a file change (NAT66 pool reassignment on the VPN exit) and as a
+liveness check for the watcher itself.
 
 ## Quick start (with gluetun)
 
@@ -127,18 +140,31 @@ the ULA stay the source AirVPN expects while the GUA becomes a usable
 bind/announce target.
 - **Why share gluetun's netns?** So we operate on the same `tun0` gluetun
 manages, with the same egress. No separate networking required.
-- **Why an HTTP echo for v6 detection?** gluetun's `PUBLICIP_FILE` is
-IPv4-only, and its control API doesn't expose v6. A direct echo over IPv6
-is the cheapest reliable way to discover what the world sees, and as a
-bonus it confirms outbound v6 actually works.
+- **Why an HTTP echo for v6 detection?** gluetun's `PUBLICIP_FILE` only
+holds the v4 exit address. gluetun's control API (`/v1/publicip/ip`) does
+expose v6 as of v3.35, but it runs exactly one publicip fetch per VPN
+reconnect on whatever stack its HTTP client happens to dial — there's no
+separate v4+v6 split, so on most stacks the control API also returns
+only v4. A direct echo over IPv6 is the cheapest reliable way to
+discover what the world sees, and as a bonus it confirms outbound v6
+actually works.
 - **Why is reannounce in scope?** Without it, qBittorrent keeps announcing
 the old GUA until its next scheduled reannounce (typically 30+ minutes),
 leaving your client off-grid on the new IP.
+- **Why netlink, not `ip` exec?** The kernel is the source of truth for
+the alias state. Reading it via rtnetlink before each write lets the
+daemon adopt an existing matching alias on restart (a true no-op
+instead of an unconditional re-set) and detect external drift. The
+`vishvananda/netlink` library speaks the same rtnetlink protocol that
+`ip` does, so kernel-visible behavior is equivalent; talking to it
+directly removes a fork/exec round trip per reconcile and trims the
+runtime image (no `iproute2` userland).
 
 ## Security
 
-The threat model is narrow: this daemon listens on no ports, and its only
-privileged operation is `ip -6 addr replace` on a single interface. The
+The threat model is narrow: this daemon listens on no ports, and its
+only privileged operation is mutating a single deprecated v6 alias on
+one interface via rtnetlink. The
 [example compose](./docker-compose.example.yaml) drops all capabilities and
 adds back only `CAP_NET_ADMIN`. Echo-endpoint responses are validated to be
 publicly-routable global unicast addresses; ULA, link-local, loopback,

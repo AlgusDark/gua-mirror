@@ -30,8 +30,8 @@ correspondingly narrow.
   pooled dead connections.
 - **Privilege escalation.** The example compose file uses `cap_drop: ALL`
   plus `cap_add: NET_ADMIN` and `no-new-privileges:true`. The container
-  has exactly one privileged capability — the minimum required to call
-  `ip -6 addr replace`.
+  has exactly one privileged capability — the minimum required to mutate
+  IPv6 addresses on the tunnel interface via rtnetlink.
 
 ### What we do not protect against
 
@@ -47,13 +47,29 @@ correspondingly narrow.
 
 ### What we log
 
-`gua-mirror` writes structured JSON to stderr. The log includes:
+`gua-mirror` writes structured JSON to stderr at the configured
+`LOG_LEVEL` (default `info`).
 
-- The configured interface, file path, and echo endpoints.
-- The detected public IPv6 address (this is your VPN's public exit IP, which
-  is already visible to every service you connect to).
-- Trigger reasons (startup, inotify event, safety poll).
-- qBittorrent operation results (no request bodies, no credentials).
+At **info** the log includes:
+
+- Startup configuration: the interface, file path, and echo endpoints.
+- Alias state changes: `alias added`, `alias replaced`, `alias present;
+  pruning extra stale aliases`, and the corresponding "shutting down" line.
+- Failures: detection errors, alias-write errors, qBittorrent reannounce
+  errors. None include credentials or request bodies.
+
+At **debug** the log additionally includes:
+
+- Per-tick trigger reasons (startup, inotify event, safety poll).
+- Per-reconcile detection details, including which echo endpoint
+  succeeded and the detected public IPv6 address (this is your VPN's
+  public exit IP, which is already visible to every service you connect
+  to).
+- "alias unchanged" no-op lines on reconciles where the kernel already
+  matches the desired state.
+
+The result at default verbosity: a healthy daemon logs at startup and on
+state transitions, then is quiet until something changes or fails.
 
 The `QBITTORRENT_USERNAME` and `QBITTORRENT_PASSWORD` environment variables
 are never logged, never written to disk, and never echoed back from the
@@ -77,10 +93,26 @@ When deploying `gua-mirror`, you should:
 
 The complete list of privileged operations `gua-mirror` performs:
 
-1. `ip -6 addr replace <gua>/128 dev <iface> valid_lft forever preferred_lft 0`
-2. `ip -6 addr del <old-gua>/128 dev <iface>` (when the GUA changes)
+1. `RTM_NEWADDR` on the tunnel interface, adding `<gua>/128` with
+   `preferred_lft = 0` and a large `valid_lft` (math.MaxInt32 ~= 68
+   years; see `kernel_linux.go` for why this is "forever-ish" rather
+   than the wire-level `0xFFFFFFFF`). Equivalent to
+   `ip -6 addr replace <gua>/128 dev <iface> valid_lft forever preferred_lft 0`.
+2. `RTM_DELADDR` on the tunnel interface for **every** deprecated /128
+   v6 alias that is not the current desired GUA. Equivalent to
+   `ip -6 addr del <stale-gua>/128 dev <iface>` per stale address.
+   Reconcile converges state in one pass, even if a previous incarnation
+   of the daemon left multiple stale aliases behind.
+3. `RTM_GETADDR` (read-only) on the tunnel interface, to observe the
+   current set of deprecated v6 aliases before deciding whether to write.
 
-That's it. No firewall rules, no routing changes, no sysctl modifications.
+That's it. No firewall rules, no routing changes, no sysctl
+modifications. The daemon previously shelled out to the `ip` command
+for (1) and (2); it now talks to rtnetlink directly via the
+`vishvananda/netlink` library, with no fork/exec round trip. (3) is new
+in this design: the kernel is the source of truth for the alias state,
+so we always read before we write rather than trusting an in-memory
+cache.
 
 ## Build provenance
 
