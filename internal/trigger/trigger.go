@@ -76,7 +76,7 @@ func Run(ctx context.Context, path string, safetyInterval time.Duration, out cha
 	if err != nil {
 		return err
 	}
-	defer func() { _ = watcher.Close() }()
+	defer watcher.Close()
 
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
@@ -196,7 +196,7 @@ func readTrimmed(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = f.Close() }()
+	defer f.Close()
 	b, err := io.ReadAll(io.LimitReader(f, maxPublicIPFileBytes))
 	if err != nil {
 		return nil, err

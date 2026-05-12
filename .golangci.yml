@@ -1,0 +1,30 @@
+# golangci-lint v2 config. See https://golangci-lint.run/usage/configuration/
+# We rely on the default set of enabled linters; this file only exists to
+# scope down errcheck's noisiest false-positives.
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      # Deferred Close on read-after-error sites (HTTP response bodies,
+      # *os.File from os.Open, fsnotify.Watcher) is a textbook Go pattern
+      # where the Close error is genuinely uninteresting:
+      #
+      #   - HTTP bodies have already been drained by the time defer runs;
+      #     Close error here cannot affect the caller's result.
+      #   - *os.File opened read-only never produces a meaningful Close
+      #     error (no buffered writes to flush).
+      #   - fsnotify.Watcher.Close on shutdown can only fail if the watcher
+      #     was already broken; the daemon is exiting anyway.
+      #
+      # Documenting the policy once here is clearer than wrapping every
+      # call site in `defer func() { _ = X.Close() }()`, which adds noise
+      # without changing behavior.
+      #
+      # errcheck matches on declared receiver types, not on satisfied
+      # interfaces, so concrete types like fsnotify.Watcher have to be
+      # listed even though they satisfy io.Closer.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*github.com/fsnotify/fsnotify.Watcher).Close
