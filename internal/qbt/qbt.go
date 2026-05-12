@@ -96,7 +96,7 @@ func (c *Client) ensureLoggedIn(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("login: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer resp.Body.Close()
 	out, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
 	if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(out)) != "Ok." {
 		return fmt.Errorf("login failed: HTTP %d body=%q",
@@ -123,7 +123,7 @@ func (c *Client) post(ctx context.Context, path string, body url.Values) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusOK:
 		return nil
