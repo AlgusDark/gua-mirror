@@ -69,17 +69,24 @@ func NewManager(ifname string, log *slog.Logger) *Manager {
 // Reconcile validates desired is a non-nil v6 address. The detect
 // package is responsible for narrower public-GUA validation; this is a
 // defense-in-depth check that we never call netlink with garbage.
-func (m *Manager) Reconcile(ctx context.Context, desired net.IP) error {
+//
+// The first return value reports whether the kernel state moved. It is
+// true if any add or delete was issued on this call, and false on the
+// pure no-op path (desired already present and no stales). Callers use
+// this to gate downstream side effects: gua-mirror only asks qBittorrent
+// to reannounce when the alias actually changed, so trackers aren't
+// hammered every safety-poll tick on a stable network.
+func (m *Manager) Reconcile(ctx context.Context, desired net.IP) (changed bool, err error) {
 	if desired == nil {
-		return fmt.Errorf("nil IP")
+		return false, fmt.Errorf("nil IP")
 	}
 	if desired.To4() != nil || desired.To16() == nil {
-		return fmt.Errorf("not an IPv6 address: %v", desired)
+		return false, fmt.Errorf("not an IPv6 address: %v", desired)
 	}
 
 	observed, err := m.ops.listDeprecatedV6(m.Interface)
 	if err != nil {
-		return fmt.Errorf("list deprecated v6 on %s: %w", m.Interface, err)
+		return false, fmt.Errorf("list deprecated v6 on %s: %w", m.Interface, err)
 	}
 
 	// Partition observed addresses into "this is what we want" and "this
@@ -101,7 +108,7 @@ func (m *Manager) Reconcile(ctx context.Context, desired net.IP) error {
 	if matching != nil && len(stale) == 0 {
 		m.Log.Debug("alias unchanged",
 			"interface", m.Interface, "address", desired.String())
-		return nil
+		return false, nil
 	}
 
 	// Add desired first (idempotent at the netlink layer via
@@ -110,7 +117,7 @@ func (m *Manager) Reconcile(ctx context.Context, desired net.IP) error {
 	// alias.
 	if matching == nil {
 		if err := m.ops.addDeprecatedV6(m.Interface, desired); err != nil {
-			return fmt.Errorf("add %s/128 on %s: %w",
+			return false, fmt.Errorf("add %s/128 on %s: %w",
 				desired, m.Interface, err)
 		}
 		switch len(stale) {
@@ -145,7 +152,10 @@ func (m *Manager) Reconcile(ctx context.Context, desired net.IP) error {
 		}
 	}
 	_ = ctx // reserved for future netlink contexts; current API is synchronous
-	return nil
+	// Reached only on the change paths above: either we issued an add,
+	// or we pruned at least one stale alias. Either way the kernel
+	// state moved.
+	return true, nil
 }
 
 // kernelOps is the internal seam used to swap the production netlink
