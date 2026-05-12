@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io/fs"
 	"log/slog"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -103,34 +102,34 @@ func run() error {
 	}
 }
 
-// reconcile detects the current public v6 and updates the alias and (if
-// configured) qBittorrent. Errors are logged and swallowed; the next tick
-// will retry. We never want to crash the daemon over a transient HTTP blip.
+// reconcile runs the pipeline once per trigger: detect the current GUA,
+// reconcile the deprecated alias on the tunnel interface, and (if
+// configured) tell qBittorrent to reannounce so trackers see the new
+// address. Errors are logged and swallowed; the next trigger will retry.
+// We never want to crash the daemon over a transient HTTP blip.
 //
-// Any path through this function that successfully fetches a public v6
-// touches the health sentinel, including the "v6 unchanged" no-op: that is
-// the dominant case in a healthy stack and is the right signal that the
-// daemon's main loop is alive and the detect path works end to end.
+// The alias manager is the source of truth for the observed alias on
+// the interface, so this function does not carry any in-memory cache:
+// each call reads the kernel, computes the diff, and applies the
+// minimum mutation needed. See alias.Manager.Reconcile for the details.
+//
+// The health sentinel is touched after a successful detection, before
+// the alias mutation. That is the right signal for the HEALTHCHECK:
+// the main loop is alive and end-to-end detection works, regardless of
+// whether the alias actually needed to change on this tick.
 func reconcile(ctx context.Context, det *detect.Detector, mgr *alias.Manager, q *qbt.Client, log *slog.Logger) {
 	detectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	ip, err := det.Detect(detectCtx)
+	desired, err := det.Detect(detectCtx)
 	if err != nil {
-		log.Warn("v6 detection failed; keeping current alias",
-			"current", ipString(mgr.Current()), "err", err)
+		log.Warn("v6 detection failed; keeping previous alias", "err", err)
 		return
 	}
 	touchHealthSentinel(log)
 
-	if cur := mgr.Current(); cur != nil && cur.Equal(ip) {
-		log.Debug("v6 unchanged", "address", ip.String())
-		return
-	}
-	log.Info("v6 changed", "from", ipString(mgr.Current()), "to", ip.String())
-
-	if err := mgr.Set(ip); err != nil {
-		log.Error("alias set failed", "err", err)
+	if err := mgr.Reconcile(ctx, desired); err != nil {
+		log.Error("alias reconcile failed", "err", err)
 		return
 	}
 	if q == nil {
@@ -160,13 +159,6 @@ func touchHealthSentinel(log *slog.Logger) {
 		}
 		_ = f.Close()
 	}
-}
-
-func ipString(ip net.IP) string {
-	if ip == nil {
-		return ""
-	}
-	return ip.String()
 }
 
 // warnIfPublicIPPathMissing reports the common misconfiguration where
