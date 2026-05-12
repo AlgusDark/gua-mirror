@@ -26,6 +26,11 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.SafetyPollInterval != DefaultSafetyPollInterval {
 		t.Errorf("SafetyPollInterval = %s, want %s", cfg.SafetyPollInterval, DefaultSafetyPollInterval)
 	}
+	if DefaultSafetyPollInterval != time.Hour {
+		t.Errorf("DefaultSafetyPollInterval = %s, want 1h "+
+			"(the poll is a slow safety net, not a primary trigger)",
+			DefaultSafetyPollInterval)
+	}
 	if got := len(cfg.IPv6EchoEndpoints); got != 3 {
 		t.Errorf("IPv6EchoEndpoints len = %d, want 3", got)
 	}

@@ -112,7 +112,7 @@ volumes:
 | `TUN_INTERFACE`        | `tun0`                                                             | Tunnel interface to add the alias on.                                   |
 | `PUBLICIP_FILE`        | `/gluetun/ip`                                                      | Path to gluetun's public-IP file. Used as an inotify trigger.           |
 | `IPV6_ECHO_ENDPOINTS`  | `https://api6.ipify.org,https://ifconfig.co,https://icanhazip.com` | Comma-separated IPv6 echo endpoints, tried in order until one succeeds. |
-| `SAFETY_POLL_INTERVAL` | `15m`                                                              | Re-detect this often even with no inotify events. Accepts Go durations. |
+| `SAFETY_POLL_INTERVAL` | `1h`                                                               | Fallback re-detect interval when no filesystem events arrive. Accepts Go durations. The daemon is event-driven; this is a slow safety net for cases where the watcher silently breaks. |
 | `QBITTORRENT_URL`      | *(unset → disabled)*                                               | qBittorrent WebUI URL. If set, reannounce-all is sent on each change.   |
 | `QBITTORRENT_USERNAME` | *(empty)*                                                          | qBittorrent username. Leave empty if "Bypass auth on localhost" is on.  |
 | `QBITTORRENT_PASSWORD` | *(empty)*                                                          | qBittorrent password.                                                   |

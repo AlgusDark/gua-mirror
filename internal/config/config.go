@@ -16,7 +16,7 @@ const (
 	DefaultTunInterface       = "tun0"
 	DefaultPublicIPFile       = "/gluetun/ip"
 	DefaultIPv6EchoEndpoints  = "https://api6.ipify.org,https://ifconfig.co,https://icanhazip.com"
-	DefaultSafetyPollInterval = 15 * time.Minute
+	DefaultSafetyPollInterval = time.Hour
 	DefaultLogLevel           = "info"
 )
 
